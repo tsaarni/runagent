@@ -52,7 +52,8 @@ type LogsCmd struct {
 	TimeRange string `help:"Time range (FROM..TO). FROM/TO: -5m (ago), 21:00:00, 2026-06-24T21:00:00, +2m (relative to FROM)." name:"time-range"`
 	Limit     int    `help:"Max events to return (first N from window)." default:"0"`
 	Last      int    `help:"Return last N matching events." default:"0"`
-	Follow    bool   `help:"Follow log output." short:"f"`
+	TimeFormat string `help:"Timestamp format: time, datetime, none, or Go layout string." default:"time" name:"time-format"`
+	Follow     bool   `help:"Follow log output." short:"f"`
 	Stream    string `help:"Filter by stream (stdout or stderr)."`
 	Target    string `arg:"" help:"Process name or ID."`
 }

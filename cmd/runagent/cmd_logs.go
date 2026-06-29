@@ -62,7 +62,7 @@ func cmdLogs() {
 		cancel()
 	}()
 
-	if err := readLog(ctx, data.Path, filter, cli.Logs.Follow, cli.Output == "json", os.Stdout); err != nil && err != context.Canceled {
+	if err := readLog(ctx, data.Path, filter, cli.Logs.Follow, cli.Output == "json", resolveTimeFormat(cli.Logs.TimeFormat), os.Stdout); err != nil && err != context.Canceled {
 		fatalf("%v", err)
 	}
 }

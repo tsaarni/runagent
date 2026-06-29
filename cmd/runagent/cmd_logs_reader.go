@@ -31,7 +31,7 @@ type logRecord struct {
 	Stats  runagent.StatsEvent
 }
 
-func readLog(ctx context.Context, path string, filter logFilter, follow bool, jsonOutput bool, w io.Writer) error {
+func readLog(ctx context.Context, path string, filter logFilter, follow bool, jsonOutput bool, timeFormat string, w io.Writer) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -61,7 +61,7 @@ func readLog(ctx context.Context, path string, filter logFilter, follow bool, js
 		records = records[:filter.limit]
 	}
 
-	p := &logPrinter{}
+	p := &logPrinter{timeFormat: timeFormat}
 	for _, r := range records {
 		printRecord(p, r, jsonOutput, w)
 	}
@@ -172,17 +172,26 @@ func printRecord(p *logPrinter, r logRecord, jsonOutput bool, w io.Writer) {
 		return
 	}
 	ts := recordTime(r)
-	if !ts.IsZero() {
+	if !ts.IsZero() && p.timeFormat != "" {
 		day := ts.Local().Format("2006-01-02")
 		if p.lastDate != "" && day != p.lastDate {
 			_, _ = fmt.Fprintf(w, "%s\n", dim("             ── "+day+" ──"))
 		}
 		p.lastDate = day
 	}
+
+	prefix := func(tsStr string, sep string) string {
+		s := p.fmtTS(tsStr)
+		if s == "" {
+			return ""
+		}
+		return dimCyan(s) + " " + sep + " "
+	}
+
 	switch r.Header.Type {
 	case "start":
 		cmd := strings.Join(r.Start.Command, " ")
-		_, _ = fmt.Fprintf(w, "%s %s %s\n", dimCyan(fmtTS(r.Start.TS)), dim("│"), dimCyan("started "+cmd))
+		_, _ = fmt.Fprintf(w, "%s%s\n", prefix(r.Start.TS, dim("│")), dimCyan("started "+cmd))
 	case "stop":
 		var msg string
 		if r.Stop.Signal != 0 {
@@ -192,29 +201,46 @@ func printRecord(p *logPrinter, r logRecord, jsonOutput bool, w io.Writer) {
 		} else {
 			msg = dimCyan("exited (code 0)")
 		}
-		_, _ = fmt.Fprintf(w, "%s %s %s\n", dimCyan(fmtTS(r.Stop.TS)), dim("│"), msg)
+		_, _ = fmt.Fprintf(w, "%s%s\n", prefix(r.Stop.TS, dim("│")), msg)
 	case "stats":
 		var parts []string
 		for _, s := range r.Stats.Stats {
 			parts = append(parts, dim(s.Label+"=")+s.Value)
 		}
-		_, _ = fmt.Fprintf(w, "%s %s %s\n", dimCyan(fmtTS(r.Stats.TS)), dim("~"), dim(strings.Join(parts, "  ")))
+		_, _ = fmt.Fprintf(w, "%s%s\n", prefix(r.Stats.TS, dim("~")), dim(strings.Join(parts, "  ")))
 	case "log":
 		msg := r.Log.Msg
 		if r.Log.Stream == "stderr" {
 			msg = red(msg)
 		}
-		_, _ = fmt.Fprintf(w, "%s   %s\n", dimCyan(fmtTS(r.Log.TS)), msg)
+		_, _ = fmt.Fprintf(w, "%s%s\n", prefix(r.Log.TS, " "), msg)
 	}
 }
 
 type logPrinter struct {
-	lastDate string
+	lastDate   string
+	timeFormat string // resolved Go layout, or "" for none
 }
 
-func fmtTS(s string) string {
+func resolveTimeFormat(s string) string {
+	switch s {
+	case "time":
+		return "15:04:05.000"
+	case "datetime":
+		return "2006-01-02 15:04:05.000"
+	case "none":
+		return ""
+	default:
+		return s
+	}
+}
+
+func (p *logPrinter) fmtTS(s string) string {
+	if p.timeFormat == "" {
+		return ""
+	}
 	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t.Local().Format("15:04:05.000")
+		return t.Local().Format(p.timeFormat)
 	}
 	return s
 }

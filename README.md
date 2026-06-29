@@ -84,6 +84,8 @@ $ runagent logs webserver
 08:26:05.653   127.0.0.1 - - [26/Jun/2026 08:26:05] "GET /index.html HTTP/1.1" 404 -
 ```
 
+Log line markers: `│` = runagent control messages, `~` = resource stats, blank = process stdout/stderr. Stderr lines are shown in red when color is enabled. Timestamp format is customizable with `--time-format`.
+
 For more details use `--json`  to see the full machine readable log records.
 
 Send SIGHUP to the process:
