@@ -4,6 +4,7 @@ package runagent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -86,26 +87,24 @@ func (lf *LogFile) Close() error {
 }
 
 // EventReader reads events from a JSON Lines stream.
+// Safe to call Next() again after EOF when more data is appended (tail mode).
 type EventReader struct {
-	scanner *bufio.Scanner
+	r *bufio.Reader
 }
 
 func NewEventReader(r io.Reader) *EventReader {
-	s := bufio.NewScanner(r)
-	s.Buffer(make([]byte, 1024*1024), 1024*1024)
-	return &EventReader{scanner: s}
+	return &EventReader{r: bufio.NewReader(r)}
 }
 
-// Next reads the next event line. Returns the raw line and decoded header.
-// Returns io.EOF when no more events are available.
+// Next reads the next event line. Returns io.EOF when no complete line
+// is available. Safe to call again after more data is appended.
 func (er *EventReader) Next() (EventHeader, json.RawMessage, error) {
-	if !er.scanner.Scan() {
-		if err := er.scanner.Err(); err != nil {
-			return EventHeader{}, nil, err
-		}
-		return EventHeader{}, nil, io.EOF
+	line, err := er.r.ReadBytes('\n')
+	if err != nil {
+		return EventHeader{}, nil, err
 	}
-	line := er.scanner.Bytes()
+	line = bytes.TrimSuffix(line, []byte("\n"))
+	line = bytes.TrimSuffix(line, []byte("\r"))
 	raw := make(json.RawMessage, len(line))
 	copy(raw, line)
 	var h EventHeader
