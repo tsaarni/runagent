@@ -234,17 +234,21 @@ func (d *Daemon) handleStart(conn net.Conn, raw json.RawMessage) {
 	d.mu.Unlock()
 
 	// Log routing goroutines
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go d.routeLog(stdout, logFile, "stdout", &wg)
-	go d.routeLog(stderr, logFile, "stderr", &wg)
-
-	// Wait goroutine
+	logsDone := make(chan struct{})
 	go func() {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go d.routeLog(stdout, logFile, "stdout", &wg)
+		go d.routeLog(stderr, logFile, "stderr", &wg)
 		wg.Wait()
-		err := cmd.Wait()
-		_ = logFile.Sync()
+		close(logsDone)
+	}()
 
+	// Wait goroutine: reap the process first, then drain logs.
+	go func() {
+		err := cmd.Wait()
+
+		// Update state immediately so ps/wait see the exit.
 		d.mu.Lock()
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -270,6 +274,20 @@ func (d *Daemon) handleStart(conn net.Conn, raw json.RawMessage) {
 			close(ch)
 		}
 		delete(d.waitChans, p.ID)
+		d.mu.Unlock()
+
+		// Kill the process group to clean up any orphaned descendants.
+		_ = syscall.Kill(-p.PID, syscall.SIGKILL)
+
+		// Close pipe read ends to unblock log scanners if a forked
+		// child still holds the write ends open.
+		_ = stdout.Close()
+		_ = stderr.Close()
+		<-logsDone
+
+		_ = logFile.Sync()
+
+		d.mu.Lock()
 		delete(d.logFiles, p.ID)
 		d.mu.Unlock()
 
