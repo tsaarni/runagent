@@ -33,7 +33,7 @@ func cmdDaemonStatus() {
 		}
 	}
 
-	if cli.Output == "json" {
+	if cli.JSON {
 		out := map[string]any{
 			"ok": true, "error": "",
 			"data": map[string]any{
@@ -43,6 +43,7 @@ func cmdDaemonStatus() {
 			},
 		}
 		enc := json.NewEncoder(os.Stdout)
+		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(out)
 		return
@@ -98,25 +99,9 @@ func cmdDaemonStart() {
 }
 
 func cmdDaemonStop() {
-	rtDir := runtimeDir()
-	pidPath := rtDir + "/daemon.pid"
-
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
+	if !stopDaemon() {
 		fmt.Println(dim("Daemon is not running"))
 		return
-	}
-	p, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || syscall.Kill(p, 0) != nil {
-		fmt.Println(dim("Daemon is not running"))
-		return
-	}
-
-	if conn, err := runagent.Dial(rtDir); err == nil {
-		_ = runagent.Send(conn, &runagent.Request{Command: "shutdown", Args: json.RawMessage("{}")})
-		var resp runagent.Response
-		_ = runagent.Recv(conn, &resp)
-		_ = conn.Close()
 	}
 	fmt.Printf("%s Daemon stopping\n", successIcon())
 }
@@ -125,8 +110,55 @@ func cmdDaemonClean() {
 	rtDir := runtimeDir()
 	stDir := stateDir()
 
-	_ = os.RemoveAll(rtDir)
-	_ = os.RemoveAll(stDir)
-	fmt.Printf("%s Removed %s\n", successIcon(), dim(rtDir))
-	fmt.Printf("%s Removed %s\n", successIcon(), dim(stDir))
+	if stopDaemon() {
+		fmt.Printf("%s Stopped daemon\n", successIcon())
+	}
+
+	removed := false
+	for _, dir := range []string{rtDir, stDir} {
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Printf("%s Failed to remove %s: %v\n", failIcon(), dim(dir), err)
+			continue
+		}
+		fmt.Printf("%s Removed %s\n", successIcon(), dim(dir))
+		removed = true
+	}
+	if !removed {
+		fmt.Println(dim("Nothing to clean"))
+	}
+}
+
+// stopDaemon sends a shutdown command to the daemon and waits for it to exit.
+// Returns true if a running daemon was found and asked to stop.
+func stopDaemon() bool {
+	rtDir := runtimeDir()
+	pidPath := rtDir + "/daemon.pid"
+
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false
+	}
+	p, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || syscall.Kill(p, 0) != nil {
+		return false
+	}
+
+	if conn, err := runagent.Dial(rtDir); err == nil {
+		_ = runagent.Send(conn, &runagent.Request{Command: "shutdown", Args: json.RawMessage("{}")})
+		var resp runagent.Response
+		_ = runagent.Recv(conn, &resp)
+		_ = conn.Close()
+	}
+
+	// Wait briefly for daemon to exit
+	for i := 0; i < 10; i++ {
+		time.Sleep(200 * time.Millisecond)
+		if syscall.Kill(p, 0) != nil {
+			break
+		}
+	}
+	return true
 }

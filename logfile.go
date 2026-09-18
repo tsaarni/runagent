@@ -1,4 +1,6 @@
-// Defines event types and JSON Lines log file I/O for recording process lifecycle and output.
+// Defines the schema for log files stored at <state_dir>/logs/<uuid>.log.
+// Each log file is JSON Lines: one JSON object per line, using the event types below.
+// Also provides LogFile (writer) and EventReader (reader) for log file I/O.
 
 package runagent
 

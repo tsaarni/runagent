@@ -28,17 +28,32 @@ func cmdRun() {
 	})
 	checkResp(resp)
 
-	if cli.Output == "json" {
+	if cli.JSON {
 		printJSON(resp)
 		return
 	}
 	var data struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-		PID  int    `json:"pid"`
+		ID       int    `json:"id"`
+		Name     string `json:"name"`
+		PID      int    `json:"pid"`
+		Replaced *struct {
+			ID       int    `json:"id"`
+			State    string `json:"state"`
+			ExitCode int    `json:"exit_code"`
+			Signal   int    `json:"signal"`
+		} `json:"replaced"`
 	}
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
 		fatalf("decode response: %v", err)
+	}
+	if data.Replaced != nil {
+		stateInfo := stateColored(data.Replaced.State)
+		if data.Replaced.Signal != 0 {
+			stateInfo += ", " + signalNameShort(data.Replaced.Signal)
+		} else if data.Replaced.ExitCode != 0 {
+			stateInfo += fmt.Sprintf(", code %d", data.Replaced.ExitCode)
+		}
+		fmt.Printf("⟳ Replacing previous %s (%s) - old logs discarded\n", bold(data.Name), stateInfo)
 	}
 	fmt.Printf("%s Started %s %s %s\n", successIcon(), bold(data.Name), dim(fmt.Sprintf("id=%d", data.ID)), dim(fmt.Sprintf("pid=%d", data.PID)))
 }

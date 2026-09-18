@@ -18,7 +18,7 @@ func NewStatsCollector(pid int) *StatsCollector {
 	return &StatsCollector{}
 }
 
-func (sc *StatsCollector) Collect(mode StatsMode) (runagent.Stats, error) {
+func (sc *StatsCollector) Collect() (runagent.Stats, error) {
 	return nil, errNotSupported
 }
 

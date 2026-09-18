@@ -1,4 +1,5 @@
-// Defines the Process struct and state/mode constants used across the daemon.
+// Defines the Process struct persisted as a JSON array in <state_dir>/registry.json.
+// Also defines process state constants.
 
 package daemon
 
@@ -13,14 +14,7 @@ type State string
 const (
 	Running State = "Running"
 	Exited  State = "Exited"
-	Crashed State = "Crashed"
-)
-
-type StatsMode int
-
-const (
-	Snapshot StatsMode = iota // full detail for live display
-	Sample                    // stable metrics for time-series logging
+	Killed  State = "Killed"
 )
 
 type Process struct {

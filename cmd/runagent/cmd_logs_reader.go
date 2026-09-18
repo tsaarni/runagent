@@ -39,6 +39,7 @@ func readLog(ctx context.Context, path string, filter logFilter, follow bool, js
 	defer func() { _ = f.Close() }()
 
 	var records []logRecord
+	sawStop := false
 	er := runagent.NewEventReader(f)
 	for {
 		h, raw, err := er.Next()
@@ -49,6 +50,9 @@ func readLog(ctx context.Context, path string, filter logFilter, follow bool, js
 			continue
 		}
 		r := decodeRecord(h, raw)
+		if h.Type == "stop" {
+			sawStop = true
+		}
 		if matchesFilter(r, filter) {
 			records = append(records, r)
 		}
@@ -67,6 +71,11 @@ func readLog(ctx context.Context, path string, filter logFilter, follow bool, js
 	}
 
 	if !follow {
+		return nil
+	}
+
+	// Don't follow if process already exited (stop event already consumed)
+	if sawStop {
 		return nil
 	}
 
@@ -195,7 +204,7 @@ func printRecord(p *logPrinter, r logRecord, jsonOutput bool, w io.Writer) {
 	case "stop":
 		var msg string
 		if r.Stop.Signal != 0 {
-			msg = yellow(fmt.Sprintf("killed (signal %d)", r.Stop.Signal))
+			msg = yellow(fmt.Sprintf("terminated (%s)", signalName(r.Stop.Signal)))
 		} else if r.Stop.ExitCode != 0 {
 			msg = red(fmt.Sprintf("exited (code %d)", r.Stop.ExitCode))
 		} else {

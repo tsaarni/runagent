@@ -10,7 +10,7 @@ import (
 )
 
 func cmdDelete() {
-	da := runagent.DeleteArgs{All: cli.Delete.All, Force: cli.Delete.Force, Target: cli.Delete.Target}
+	da := runagent.DeleteArgs{All: cli.Delete.All, Target: cli.Delete.Target}
 	if !da.All && da.Target == "" {
 		fatalf("specify a target or --all")
 	}
@@ -18,7 +18,7 @@ func cmdDelete() {
 	resp := sendRecv(&runagent.Request{Command: "delete", Args: mustArgs(da)})
 	checkResp(resp)
 
-	if cli.Output == "json" {
+	if cli.JSON {
 		printJSON(resp)
 		return
 	}

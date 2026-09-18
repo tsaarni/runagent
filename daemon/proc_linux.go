@@ -1,4 +1,6 @@
 // Collects per-process resource stats (CPU, memory, I/O, FDs) from /proc on Linux.
+// Network I/O is not included: Linux does not track network stats per process,
+// only per network namespace (/proc/<pid>/net/dev).
 
 //go:build linux
 
@@ -27,7 +29,7 @@ func NewStatsCollector(pid int) *StatsCollector {
 	return &StatsCollector{pid: pid}
 }
 
-func (sc *StatsCollector) Collect(mode StatsMode) (runagent.Stats, error) {
+func (sc *StatsCollector) Collect() (runagent.Stats, error) {
 	var stats runagent.Stats
 
 	fields, err := readStatFields(sc.pid)
@@ -54,12 +56,10 @@ func (sc *StatsCollector) Collect(mode StatsMode) (runagent.Stats, error) {
 		sc.prevWhen = now
 	}
 
-	if mode == Snapshot {
-		stats = append(stats,
-			runagent.Stat{Label: "CPU (3s avg)", Value: fmt.Sprintf("%.1f%%", cpuPct)},
-			runagent.Stat{Label: "CPU time", Value: fmt.Sprintf("%.1fs user, %.1fs system", float64(utime)/float64(clkTck), float64(stime)/float64(clkTck))},
-		)
-	}
+	stats = append(stats,
+		runagent.Stat{Label: "CPU (3s avg)", Value: fmt.Sprintf("%.1f%%", cpuPct)},
+		runagent.Stat{Label: "CPU time", Value: fmt.Sprintf("%.1fs user, %.1fs system", float64(utime)/float64(clkTck), float64(stime)/float64(clkTck))},
+	)
 
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/smaps_rollup", sc.pid))
 	if err == nil {
@@ -75,9 +75,7 @@ func (sc *StatsCollector) Collect(mode StatsMode) (runagent.Stats, error) {
 	data, err = os.ReadFile(fmt.Sprintf("/proc/%d/status", sc.pid))
 	if err == nil {
 		m := parseKeyValue(string(data))
-		if mode == Snapshot {
-			stats = append(stats, runagent.Stat{Label: "Peak RSS", Value: humanize.IBytes(m["VmHWM"] * 1024)})
-		}
+		stats = append(stats, runagent.Stat{Label: "Peak RSS", Value: humanize.IBytes(m["VmHWM"] * 1024)})
 		stats = append(stats, runagent.Stat{Label: "Threads", Value: fmt.Sprintf("%d", threads)})
 
 		// Count child processes
@@ -100,6 +98,10 @@ func (sc *StatsCollector) Collect(mode StatsMode) (runagent.Stats, error) {
 		m := parseKeyValue(string(data))
 		stats = append(stats, runagent.Stat{Label: "Disk I/O", Value: fmt.Sprintf("%s read, %s written",
 			humanize.IBytes(m["read_bytes"]), humanize.IBytes(m["write_bytes"]))})
+	}
+
+	if ports := readListenPorts(sc.pid); len(ports) > 0 {
+		stats = append(stats, runagent.Stat{Label: "Listen", Value: strings.Join(ports, ", ")})
 	}
 
 	return stats, nil
@@ -146,4 +148,115 @@ func parseKeyValue(data string) map[string]uint64 {
 		}
 	}
 	return m
+}
+
+// readListenPorts returns listening TCP ports owned by the given process.
+// It reads /proc/<pid>/net/tcp{,6} and filters by socket inodes found in /proc/<pid>/fd.
+func readListenPorts(pid int) []string {
+	ownedInodes := readSocketInodes(pid)
+	if len(ownedInodes) == 0 {
+		return nil
+	}
+
+	var ports []string
+	seen := make(map[string]bool)
+
+	for _, proto := range []string{"tcp", "tcp6"} {
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/net/%s", pid, proto))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 10 {
+				continue
+			}
+			// State 0A = LISTEN
+			if fields[3] != "0A" {
+				continue
+			}
+			inode := fields[9]
+			if !ownedInodes[inode] {
+				continue
+			}
+			addr, port := parseHexAddrPort(fields[1], proto == "tcp6")
+			s := formatListenAddr(addr, port)
+			if !seen[s] {
+				seen[s] = true
+				ports = append(ports, s)
+			}
+		}
+	}
+	return ports
+}
+
+// readSocketInodes returns the set of socket inode numbers owned by the process.
+func readSocketInodes(pid int) map[string]bool {
+	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
+	if err != nil {
+		return nil
+	}
+	inodes := make(map[string]bool)
+	for _, e := range entries {
+		link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, e.Name()))
+		if err != nil {
+			continue
+		}
+		// Format: socket:[12345]
+		if strings.HasPrefix(link, "socket:[") && strings.HasSuffix(link, "]") {
+			inodes[link[8:len(link)-1]] = true
+		}
+	}
+	return inodes
+}
+
+// parseHexAddrPort extracts IP and port from the hex-encoded local_address field.
+func parseHexAddrPort(s string, isV6 bool) (string, uint16) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return "", 0
+	}
+	port, _ := strconv.ParseUint(parts[1], 16, 16)
+
+	hexAddr := parts[0]
+	if !isV6 {
+		// IPv4: 4 bytes in little-endian hex
+		if len(hexAddr) == 8 {
+			a, _ := strconv.ParseUint(hexAddr[6:8], 16, 8)
+			b, _ := strconv.ParseUint(hexAddr[4:6], 16, 8)
+			c, _ := strconv.ParseUint(hexAddr[2:4], 16, 8)
+			d, _ := strconv.ParseUint(hexAddr[0:2], 16, 8)
+			return fmt.Sprintf("%d.%d.%d.%d", a, b, c, d), uint16(port)
+		}
+		return "", uint16(port)
+	}
+
+	// IPv6: 32 hex chars, groups of 8 chars each in little-endian 32-bit words
+	if len(hexAddr) == 32 {
+		// Check for IPv4-mapped IPv6 (::ffff:x.x.x.x)
+		if hexAddr[:24] == "0000000000000000FFFF0000" {
+			v4 := hexAddr[24:]
+			a, _ := strconv.ParseUint(v4[6:8], 16, 8)
+			b, _ := strconv.ParseUint(v4[4:6], 16, 8)
+			c, _ := strconv.ParseUint(v4[2:4], 16, 8)
+			d, _ := strconv.ParseUint(v4[0:2], 16, 8)
+			return fmt.Sprintf("%d.%d.%d.%d", a, b, c, d), uint16(port)
+		}
+		// All zeros = ::
+		if hexAddr == "00000000000000000000000000000000" {
+			return "::", uint16(port)
+		}
+		return "[::]", uint16(port)
+	}
+	return "", uint16(port)
+}
+
+func formatListenAddr(addr string, port uint16) string {
+	if addr == "0.0.0.0" || addr == "::" {
+		return fmt.Sprintf(":%d", port)
+	}
+	if strings.Contains(addr, ":") {
+		return fmt.Sprintf("[%s]:%d", addr, port)
+	}
+	return fmt.Sprintf("%s:%d", addr, port)
 }

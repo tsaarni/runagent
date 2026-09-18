@@ -51,15 +51,23 @@ func Run(runtimeDir, stateDir string) error {
 		return fmt.Errorf("another daemon is running")
 	}
 
-	// Crash recovery: wipe registry and logs
+	// Load existing state (preserves logs and registry across restarts)
 	regPath := filepath.Join(stateDir, "registry.json")
-	_ = os.Remove(regPath)
-	entries, _ := os.ReadDir(logsDir)
-	for _, e := range entries {
-		_ = os.Remove(filepath.Join(logsDir, e.Name()))
+	reg := NewRegistry(regPath)
+	if err := reg.Load(); err != nil {
+		slog.Warn("failed to load registry, starting fresh", "error", err)
 	}
 
-	reg := NewRegistry(regPath)
+	// Mark any previously-Running processes as Killed (daemon was not running to track them).
+	for _, p := range reg.All() {
+		if p.State == Running {
+			p.State = Killed
+			if p.ExitedAt.IsZero() {
+				p.ExitedAt = time.Now()
+			}
+		}
+	}
+	_ = reg.Save()
 
 	sockPath := filepath.Join(runtimeDir, "daemon.sock")
 	_ = os.Remove(sockPath)
@@ -109,8 +117,6 @@ func (d *Daemon) handle(conn net.Conn) {
 	switch req.Command {
 	case "start":
 		d.handleStart(conn, req.Args)
-	case "list":
-		d.handleList(conn)
 	case "status":
 		d.handleStatus(conn, req.Args)
 	case "logs":
@@ -146,10 +152,19 @@ func (d *Daemon) handleStart(conn net.Conn, raw json.RawMessage) {
 	}
 
 	d.mu.Lock()
-	if d.registry.FindByName(name) != nil {
-		d.mu.Unlock()
-		_ = runagent.SendError(conn, fmt.Sprintf("process %q already exists", name))
-		return
+	var replaced *Process
+	if existing := d.registry.FindByName(name); existing != nil {
+		if existing.State == Running {
+			d.mu.Unlock()
+			_ = runagent.SendError(conn, fmt.Sprintf("process %q is still running", name))
+			return
+		}
+		// Auto-replace dead process: remove old entry and logs
+		replaced = existing
+		logPath := filepath.Join(d.stateDir, "logs", existing.UUID+".log")
+		_ = os.Remove(logPath)
+		delete(d.collectors, existing.ID)
+		d.registry.Remove(existing.ID)
 	}
 
 	id := newUUID()
@@ -234,14 +249,14 @@ func (d *Daemon) handleStart(conn net.Conn, raw json.RawMessage) {
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-					p.State = Crashed
+					p.State = Killed
 					p.Signal = int(ws.Signal())
 				} else {
 					p.State = Exited
 					p.ExitCode = exitErr.ExitCode()
 				}
 			} else {
-				p.State = Crashed
+				p.State = Killed
 			}
 		} else {
 			p.State = Exited
@@ -266,7 +281,11 @@ func (d *Daemon) handleStart(conn net.Conn, raw json.RawMessage) {
 		_ = logFile.Close()
 	}()
 
-	_ = runagent.SendOK(conn, map[string]any{"id": p.ID, "name": p.Name, "uuid": p.UUID, "pid": p.PID})
+	result := map[string]any{"id": p.ID, "name": p.Name, "uuid": p.UUID, "pid": p.PID}
+	if replaced != nil {
+		result["replaced"] = map[string]any{"id": replaced.ID, "state": string(replaced.State), "exit_code": replaced.ExitCode, "signal": replaced.Signal}
+	}
+	_ = runagent.SendOK(conn, result)
 }
 
 func (d *Daemon) routeLog(r io.Reader, logFile *runagent.LogFile, stream string, wg *sync.WaitGroup) {
@@ -283,51 +302,37 @@ func (d *Daemon) routeLog(r io.Reader, logFile *runagent.LogFile, stream string,
 }
 
 
-func (d *Daemon) handleList(conn net.Conn) {
-	d.mu.Lock()
-	procs := d.registry.All()
-	d.mu.Unlock()
-
-	type entry struct {
-		ID        int      `json:"id"`
-		Name      string   `json:"name"`
-		PID       int      `json:"pid"`
-		State     string   `json:"state"`
-		Command   []string `json:"command"`
-		ExitCode  int      `json:"exit_code"`
-		Signal    int      `json:"signal"`
-		StartedAt string   `json:"started_at"`
-		ExitedAt  string   `json:"exited_at,omitempty"`
-	}
-	list := make([]entry, 0, len(procs))
-	for _, p := range procs {
-		e := entry{
-			ID: p.ID, Name: p.Name, PID: p.PID, State: string(p.State),
-			Command: p.Command, ExitCode: p.ExitCode, Signal: p.Signal,
-			StartedAt: p.StartedAt.Format(time.RFC3339Nano),
-		}
-		if !p.ExitedAt.IsZero() {
-			e.ExitedAt = p.ExitedAt.Format(time.RFC3339Nano)
-		}
-		list = append(list, e)
-	}
-	_ = runagent.SendOK(conn, list)
-}
-
 func (d *Daemon) handleStatus(conn net.Conn, raw json.RawMessage) {
 	var args runagent.StatusArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		_ = runagent.SendError(conn, "invalid args")
 		return
 	}
-	d.mu.Lock()
-	p := d.registry.Resolve(args.Target)
-	if p == nil {
-		d.mu.Unlock()
-		_ = runagent.SendError(conn, "process not found: "+args.Target)
-		return
-	}
 
+	d.mu.Lock()
+	var procs []*Process
+	if args.Target == "" {
+		procs = d.registry.All()
+	} else {
+		p := d.registry.Resolve(args.Target)
+		if p == nil {
+			d.mu.Unlock()
+			_ = runagent.SendError(conn, "process not found: "+args.Target)
+			return
+		}
+		procs = []*Process{p}
+	}
+	d.mu.Unlock()
+
+	var results []map[string]any
+	for _, p := range procs {
+		results = append(results, d.collectStatus(p))
+	}
+	_ = runagent.SendOK(conn, results)
+}
+
+func (d *Daemon) collectStatus(p *Process) map[string]any {
+	d.mu.Lock()
 	result := map[string]any{
 		"id": p.ID, "name": p.Name, "pid": p.PID, "state": string(p.State),
 		"command": p.Command, "exit_code": p.ExitCode, "signal": p.Signal,
@@ -347,12 +352,11 @@ func (d *Daemon) handleStatus(conn net.Conn, raw json.RawMessage) {
 		startTime := p.StartTime
 		d.mu.Unlock()
 
-		// Verify PID and collect stats outside lock
 		st, err := ReadStartTime(pid)
 		if err != nil || st != startTime {
 			result["error"] = "PID recycled or process gone"
 		} else {
-			stats, err := sc.Collect(Snapshot)
+			stats, err := sc.Collect()
 			if err == nil {
 				d.mu.Lock()
 				p.LastStats = stats
@@ -362,12 +366,13 @@ func (d *Daemon) handleStatus(conn net.Conn, raw json.RawMessage) {
 		}
 	} else {
 		if p.LastStats != nil {
-			result["stats"] = p.LastStats
+			// Filter out stats that are meaningless for dead processes.
+			result["stats"] = filterStats(p.LastStats, "CPU (3s avg)", "CPU time", "Listen")
 		}
 		d.mu.Unlock()
 	}
 
-	_ = runagent.SendOK(conn, result)
+	return result
 }
 
 func (d *Daemon) handleLogs(conn net.Conn, raw json.RawMessage) {
@@ -401,7 +406,7 @@ func (d *Daemon) handleKill(conn net.Conn, raw json.RawMessage) {
 		return
 	}
 	if p.State != Running {
-		_ = runagent.SendError(conn, "process is not running")
+		_ = runagent.SendError(conn, fmt.Sprintf("%s already exited", p.Name))
 		return
 	}
 
@@ -431,21 +436,12 @@ func (d *Daemon) handleDelete(conn net.Conn, raw json.RawMessage) {
 	d.mu.Lock()
 	var targets []*Process
 	if args.All {
-		for _, p := range d.registry.All() {
-			if args.Force || p.State != Running {
-				targets = append(targets, p)
-			}
-		}
+		targets = append(targets, d.registry.All()...)
 	} else {
 		p := d.registry.Resolve(args.Target)
 		if p == nil {
 			d.mu.Unlock()
 			_ = runagent.SendError(conn, "process not found: "+args.Target)
-			return
-		}
-		if !args.Force && p.State == Running {
-			d.mu.Unlock()
-			_ = runagent.SendError(conn, "process is still running, use --force to kill and delete")
 			return
 		}
 		targets = []*Process{p}
@@ -506,7 +502,7 @@ func (d *Daemon) handleWait(conn net.Conn, raw json.RawMessage) {
 	// Already terminal?
 	if p.State != Running {
 		d.mu.Unlock()
-		_ = runagent.SendOK(conn, map[string]any{"id": p.ID, "name": p.Name, "exit_code": p.ExitCode, "state": string(p.State)})
+		_ = runagent.SendOK(conn, map[string]any{"id": p.ID, "name": p.Name, "exit_code": p.ExitCode, "signal": p.Signal, "state": string(p.State)})
 		return
 	}
 
@@ -543,7 +539,7 @@ func (d *Daemon) handleWait(conn net.Conn, raw json.RawMessage) {
 			_ = runagent.SendError(conn, "process was deleted")
 			return
 		}
-		_ = runagent.SendOK(conn, map[string]any{"id": p.ID, "name": p.Name, "exit_code": p.ExitCode, "state": string(p.State)})
+		_ = runagent.SendOK(conn, map[string]any{"id": p.ID, "name": p.Name, "exit_code": p.ExitCode, "signal": p.Signal, "state": string(p.State)})
 	case <-timeout:
 		d.removeWaitChan(id, ch)
 		_ = runagent.SendError(conn, "timeout waiting for process")
@@ -601,7 +597,7 @@ func (d *Daemon) pollStats() {
 		}
 		var results []pollResult
 		for _, t := range targets {
-			stats, err := t.sc.Collect(Sample)
+			stats, err := t.sc.Collect()
 			if err == nil {
 				results = append(results, pollResult{id: t.id, stats: stats})
 			}
@@ -615,14 +611,16 @@ func (d *Daemon) pollStats() {
 				continue
 			}
 			p.LastStats = r.stats
-			if !statsEqual(r.stats, lastEmitted[r.id]) {
+			// Log only stable metrics; exclude noisy or redundant ones.
+			logStats := filterStats(r.stats, "CPU (3s avg)", "CPU time", "Peak RSS")
+			if !statsEqual(logStats, lastEmitted[r.id]) {
 				if lf := d.logFiles[r.id]; lf != nil {
 					_ = lf.Append(runagent.StatsEvent{
 						EventHeader: runagent.EventHeader{Type: "stats", TS: time.Now().Format(time.RFC3339Nano)},
-						Stats:       r.stats,
+						Stats:       logStats,
 					})
 				}
-				lastEmitted[r.id] = r.stats
+				lastEmitted[r.id] = logStats
 			}
 		}
 		_ = d.registry.Save()
@@ -640,6 +638,21 @@ func statsEqual(a, b runagent.Stats) bool {
 		}
 	}
 	return true
+}
+
+// filterStats returns a copy of stats with the named labels removed.
+func filterStats(stats runagent.Stats, exclude ...string) runagent.Stats {
+	ex := make(map[string]bool, len(exclude))
+	for _, l := range exclude {
+		ex[l] = true
+	}
+	var out runagent.Stats
+	for _, s := range stats {
+		if !ex[s.Label] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (d *Daemon) shutdown() {

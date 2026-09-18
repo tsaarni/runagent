@@ -13,7 +13,7 @@ func cmdKill() {
 	resp := sendRecv(&runagent.Request{Command: "kill", Args: mustArgs(runagent.KillArgs{Target: cli.Kill.Target, Signal: cli.Kill.Signal})})
 	checkResp(resp)
 
-	if cli.Output == "json" {
+	if cli.JSON {
 		printJSON(resp)
 		return
 	}

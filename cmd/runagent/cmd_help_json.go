@@ -35,6 +35,7 @@ func printHelpJSON() {
 	}
 
 	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
 	_ = enc.Encode(cmds)
 }
 

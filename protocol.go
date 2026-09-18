@@ -39,7 +39,6 @@ type KillArgs struct {
 type DeleteArgs struct {
 	Target string `json:"target"`
 	All    bool   `json:"all"`
-	Force  bool   `json:"force"`
 }
 
 type LogsArgs struct {

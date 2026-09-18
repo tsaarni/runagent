@@ -21,17 +21,14 @@ import (
 )
 
 var cli struct {
-	Output string `help:"Output format (table or json)." default:"table" enum:"table,json"`
-	JSON   bool   `help:"Shorthand for --output=json." name:"json"`
+	JSON bool `help:"Output in JSON format." name:"json"`
 
-	Run      RunCmd      `cmd:"" aliases:"start" help:"Spawn a background process."`
-	List     ListCmd     `cmd:"" aliases:"ps" help:"List all managed processes."`
-	Status   StatusCmd   `cmd:"" aliases:"stats" help:"Show detailed process metrics."`
+	Run      RunCmd      `cmd:"" help:"Spawn a background process."`
+	Ps       PsCmd       `cmd:"" help:"List processes or show process details."`
 	Logs     LogsCmd     `cmd:"" help:"Read process log output."`
 	Kill     KillCmd     `cmd:"" help:"Send signal to process (default: SIGTERM)."`
-	Delete   DeleteCmd   `cmd:"" aliases:"rm" help:"Remove process and logs."`
+	Delete   DeleteCmd   `cmd:"" help:"Remove process and logs."`
 	Wait     WaitCmd     `cmd:"" help:"Block until process exits."`
-	Shutdown ShutdownCmd `cmd:"" help:"Gracefully stop daemon and all processes."`
 	Daemon   DaemonCmd   `cmd:"" help:"Manage the daemon."`
 
 	DaemonRun DaemonRunCmd `cmd:"" hidden:"" name:"daemon-run"`
@@ -43,9 +40,9 @@ type RunCmd struct {
 	Cwd     string   `help:"Working directory." type:"path"`
 	Command []string `arg:"" required:"" passthrough:"" help:"Command and arguments to run."`
 }
-type ListCmd struct{}
-type StatusCmd struct {
-	Target string `arg:"" optional:"" help:"Process name or ID (omit for all)."`
+type PsCmd struct {
+	All    bool   `help:"Show details for all processes." short:"a"`
+	Target string `arg:"" optional:"" help:"Process name or ID (omit to list all)."`
 }
 type LogsCmd struct {
 	Type      string `help:"Event types to show (comma-separated: start,log,stats,stop)." default:"start,log,stats,stop"`
@@ -62,15 +59,13 @@ type KillCmd struct {
 	Target string `arg:"" help:"Process name or ID."`
 }
 type DeleteCmd struct {
-	All    bool   `help:"Delete all non-running processes."`
-	Force  bool   `help:"Kill running process and delete."`
+	All    bool   `help:"Delete all processes."`
 	Target string `arg:"" optional:"" help:"Process name or ID."`
 }
 type WaitCmd struct {
 	Timeout string `help:"Timeout duration (e.g., 30s)."`
 	Target  string `arg:"" help:"Process name or ID."`
 }
-type ShutdownCmd struct{}
 type DaemonCmd struct {
 	Status DaemonStatusCmd `cmd:"" default:"1" help:"Show daemon status."`
 	Start  DaemonStartCmd  `cmd:"" help:"Start the daemon."`
@@ -85,23 +80,20 @@ type DaemonRunCmd struct{}
 
 func main() {
 	helpWithHint := func(options kong.HelpOptions, ctx *kong.Context) error {
-		if hasArg(ctx.Args, "--output=json", "--json") {
+		if hasArg(ctx.Args, "--json") {
 			printHelpJSON()
-			ctx.Kong.Exit(0)
+			ctx.Exit(0)
 			return nil
 		}
 		if err := kong.DefaultHelpPrinter(options, ctx); err != nil {
 			return err
 		}
 		if ctx.Selected() == nil {
-			fmt.Fprintln(ctx.Stdout, "\nFor full help of all commands in machine-readable format: runagent --help --output=json") //nolint:errcheck
+			fmt.Fprintln(ctx.Stdout, "\nFor full help of all commands in machine-readable format: runagent --help --json") //nolint:errcheck
 		}
 		return nil
 	}
 	ctx := kong.Parse(&cli, kong.UsageOnError(), kong.Help(helpWithHint))
-	if cli.JSON {
-		cli.Output = "json"
-	}
 	switch ctx.Command() {
 	case "daemon-run":
 		runDaemon()
@@ -113,22 +105,18 @@ func main() {
 		cmdDaemonStop()
 	case "daemon clean":
 		cmdDaemonClean()
-	case "run <command>", "start <command>":
+	case "run <command>":
 		cmdRun()
-	case "list", "ps":
-		cmdList()
-	case "status", "status <target>", "stats", "stats <target>":
-		cmdStatus()
+	case "ps", "ps <target>":
+		cmdPs()
 	case "logs <target>":
 		cmdLogs()
 	case "kill <target>":
 		cmdKill()
-	case "delete", "delete <target>", "rm", "rm <target>":
+	case "delete", "delete <target>":
 		cmdDelete()
 	case "wait <target>":
 		cmdWait()
-	case "shutdown":
-		cmdShutdown()
 	default:
 		ctx.FatalIfErrorf(fmt.Errorf("unknown command: %s", ctx.Command()))
 	}
@@ -230,8 +218,9 @@ func sendRecv(req *runagent.Request) *runagent.Response {
 
 func fatalf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	if cli.Output == "json" {
+	if cli.JSON {
 		enc := json.NewEncoder(os.Stdout)
+		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{"ok": false, "error": msg, "data": nil})
 	} else {
@@ -254,6 +243,7 @@ func mustArgs(v any) json.RawMessage {
 func printJSON(resp *runagent.Response) {
 	out := map[string]any{"ok": true, "error": "", "data": json.RawMessage(resp.Data)}
 	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(out)
 }
