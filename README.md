@@ -1,4 +1,6 @@
-# runagent
+<p align="center">
+  <img src="assets/runagent.svg" alt="runagent" width="240">
+</p>
 
 Background process manager for agents.
 
