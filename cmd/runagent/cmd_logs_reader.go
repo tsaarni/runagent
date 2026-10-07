@@ -199,16 +199,21 @@ func printRecord(p *logPrinter, r logRecord, jsonOutput bool, w io.Writer) {
 
 	switch r.Header.Type {
 	case "start":
+		p.startedAt = recordTime(r)
 		cmd := strings.Join(r.Start.Command, " ")
 		_, _ = fmt.Fprintf(w, "%s%s\n", prefix(r.Start.TS, dim("│")), dimCyan("started "+cmd))
 	case "stop":
+		var runtime string
+		if stopTime := recordTime(r); !p.startedAt.IsZero() && !stopTime.IsZero() {
+			runtime = fmt.Sprintf(" runtime %s", stopTime.Sub(p.startedAt).Truncate(time.Second))
+		}
 		var msg string
 		if r.Stop.Signal != 0 {
-			msg = yellow(fmt.Sprintf("terminated (%s)", signalName(r.Stop.Signal)))
+			msg = yellow(fmt.Sprintf("terminated (%s)%s", signalName(r.Stop.Signal), runtime))
 		} else if r.Stop.ExitCode != 0 {
-			msg = red(fmt.Sprintf("exited (code %d)", r.Stop.ExitCode))
+			msg = red(fmt.Sprintf("exited (code %d)%s", r.Stop.ExitCode, runtime))
 		} else {
-			msg = dimCyan("exited (code 0)")
+			msg = dimCyan(fmt.Sprintf("exited (code 0)%s", runtime))
 		}
 		_, _ = fmt.Fprintf(w, "%s%s\n", prefix(r.Stop.TS, dim("│")), msg)
 	case "stats":
@@ -228,7 +233,8 @@ func printRecord(p *logPrinter, r logRecord, jsonOutput bool, w io.Writer) {
 
 type logPrinter struct {
 	lastDate   string
-	timeFormat string // resolved Go layout, or "" for none
+	timeFormat string    // resolved Go layout, or "" for none
+	startedAt  time.Time // start event time, used to compute runtime on exit
 }
 
 func resolveTimeFormat(s string) string {
