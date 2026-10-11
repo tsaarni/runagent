@@ -38,7 +38,7 @@ go run github.com/tsaarni/runagent/cmd/runagent@latest run -n myapp -- myapp
 | `logs` | Read process log output |
 | `kill` | Send signal to process (default: SIGTERM) |
 | `wait` | Block until process exits |
-| `delete` | Remove process and logs |
+| `delete` | Kill process (if running) and delete its logs |
 | `daemon` | Manage the daemon (start, stop, status, clean) |
 
 ## Example Usage
@@ -134,8 +134,15 @@ $ runagent run -n webserver -- python3 -m http.server 9000
 ✓ Started webserver id=2 pid=3142600
 ```
 
+Delete a process and its logs (if still running, it is killed with `SIGKILL` first):
+
+```console
+$ runagent delete webserver
+✓ Deleted webserver
+```
+
 ## Using with LLM Agents
 
 Add this to your prompt:
 
-> Use `runagent` to start, monitor, and stop background processes. Run `runagent --help --json` to learn how to use it.
+> Use `runagent` to start, monitor, and stop background processes. Run `runagent --help` to learn how to use it.

@@ -27,7 +27,7 @@ var cli struct {
 	Ps       PsCmd       `cmd:"" help:"List processes or show process details."`
 	Logs     LogsCmd     `cmd:"" help:"Read process log output."`
 	Kill     KillCmd     `cmd:"" help:"Send signal to process (default: SIGTERM)."`
-	Delete   DeleteCmd   `cmd:"" help:"Remove process and logs."`
+	Delete   DeleteCmd   `cmd:"" help:"Kill process (if running) and delete its logs."`
 	Wait     WaitCmd     `cmd:"" help:"Block until process exits."`
 	Daemon   DaemonCmd   `cmd:"" help:"Manage the daemon."`
 
@@ -35,9 +35,9 @@ var cli struct {
 }
 
 type RunCmd struct {
-	Name    string   `help:"Process name." short:"n"`
-	Env     []string `help:"Environment variable KEY=VALUE (repeatable)." short:"e"`
-	Cwd     string   `help:"Working directory." type:"path"`
+	Name    string   `help:"Process name." short:"n" placeholder:"NAME"`
+	Env     []string `help:"Environment variable KEY=VALUE (repeatable)." short:"e" placeholder:"KEY=VALUE"`
+	Cwd     string   `help:"Working directory." type:"path" placeholder:"PATH"`
 	Command []string `arg:"" required:"" passthrough:"" help:"Command and arguments to run."`
 }
 type PsCmd struct {
@@ -45,17 +45,17 @@ type PsCmd struct {
 	Target string `arg:"" optional:"" help:"Process name or ID (omit to list all)."`
 }
 type LogsCmd struct {
-	Type      string `help:"Event types to show (comma-separated: start,log,stats,stop)." default:"start,log,stats,stop"`
-	TimeRange string `help:"Time range (FROM..TO). FROM/TO: -5m (ago), 21:00:00, 2026-06-24T21:00:00, +2m (relative to FROM)." name:"time-range"`
-	Limit     int    `help:"Max events to return (first N from window)." default:"0"`
-	Last      int    `help:"Return last N matching events." default:"0"`
-	TimeFormat string `help:"Timestamp format: time, datetime, none, or Go layout string." default:"time" name:"time-format"`
+	Type       string `help:"Event types to show (comma-separated: start,log,stats,stop)." default:"start,log,stats,stop" placeholder:"TYPES"`
+	TimeRange  string `help:"Time range (FROM..TO). FROM/TO: -5m (ago), 21:00:00, 2026-06-24T21:00:00, +2m (relative to FROM)." name:"time-range" placeholder:"FROM..TO"`
+	Limit      int    `help:"Max events to return (first N from window)." default:"0" placeholder:"N"`
+	Last       int    `help:"Return last N matching events." default:"0" placeholder:"N"`
+	TimeFormat string `help:"Timestamp format: time, datetime, none, or Go layout string." default:"time" name:"time-format" placeholder:"FORMAT"`
 	Follow     bool   `help:"Follow log output." short:"f"`
-	Stream    string `help:"Filter by stream (stdout or stderr)."`
-	Target    string `arg:"" help:"Process name or ID."`
+	Stream     string `help:"Filter by stream (stdout or stderr)." placeholder:"STREAM"`
+	Target     string `arg:"" help:"Process name or ID."`
 }
 type KillCmd struct {
-	Signal string `help:"Signal to send." default:"SIGTERM"`
+	Signal string `help:"Signal to send." default:"SIGTERM" placeholder:"SIGNAL"`
 	Target string `arg:"" help:"Process name or ID."`
 }
 type DeleteCmd struct {
@@ -63,7 +63,7 @@ type DeleteCmd struct {
 	Target string `arg:"" optional:"" help:"Process name or ID."`
 }
 type WaitCmd struct {
-	Timeout string `help:"Timeout duration (e.g., 30s)."`
+	Timeout string `help:"Timeout duration (e.g., 30s)." placeholder:"DURATION"`
 	Target  string `arg:"" help:"Process name or ID."`
 }
 type DaemonCmd struct {
@@ -85,13 +85,10 @@ func main() {
 			ctx.Exit(0)
 			return nil
 		}
-		if err := kong.DefaultHelpPrinter(options, ctx); err != nil {
-			return err
-		}
 		if ctx.Selected() == nil {
-			fmt.Fprintln(ctx.Stdout, "\nFor full help of all commands in machine-readable format: runagent --help --json") //nolint:errcheck
+			return printFullHelp(ctx.Stdout, ctx.Model)
 		}
-		return nil
+		return kong.DefaultHelpPrinter(options, ctx)
 	}
 	ctx := kong.Parse(&cli, kong.UsageOnError(), kong.Help(helpWithHint))
 	switch ctx.Command() {

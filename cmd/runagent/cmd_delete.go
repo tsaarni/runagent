@@ -1,4 +1,4 @@
-// Implements the "delete" command that removes a process entry and its logs.
+// Implements the "delete" command that kills a process (if running) and deletes its logs.
 
 package main
 
