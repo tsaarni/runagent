@@ -99,12 +99,6 @@ func (t *table) print() {
 	}
 	fmt.Println(strings.Join(parts, "  "))
 
-	// Separator line
-	sepParts := make([]string, ncols)
-	for i := range t.headers {
-		sepParts[i] = dim(strings.Repeat("─", widths[i]))
-	}
-	fmt.Println(strings.Join(sepParts, "  "))
 
 	// Data rows
 	for _, row := range t.rows {

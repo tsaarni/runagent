@@ -122,7 +122,6 @@ To see all processes started by `runagent`:
 ```console
 $ runagent ps
 ID  NAME       PID  STATE   COMMAND                      EXIT       UPTIME
-──  ─────────  ───  ──────  ───────────────────────────  ─────────  ──────
 1   webserver  -    Killed  python3 -m http.server 9000  SIGHUP(1)  26s
 ```
 
