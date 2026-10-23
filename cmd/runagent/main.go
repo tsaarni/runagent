@@ -59,8 +59,9 @@ type KillCmd struct {
 	Target string `arg:"" help:"Process name or ID."`
 }
 type DeleteCmd struct {
-	All    bool   `help:"Delete all processes."`
-	Target string `arg:"" optional:"" help:"Process name or ID."`
+	All     bool   `help:"Delete all processes."`
+	Stopped bool   `help:"Delete all processes that are not running (exited or killed)."`
+	Target  string `arg:"" optional:"" help:"Process name or ID."`
 }
 type WaitCmd struct {
 	Timeout string `help:"Timeout duration (e.g., 30s)." placeholder:"DURATION"`
