@@ -21,7 +21,3 @@ func NewStatsCollector(pid int) *StatsCollector {
 func (sc *StatsCollector) Collect() (runagent.Stats, error) {
 	return nil, errNotSupported
 }
-
-func ReadStartTime(pid int) (int64, error) {
-	return 0, errNotSupported
-}
